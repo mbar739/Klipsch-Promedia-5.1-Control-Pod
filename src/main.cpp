@@ -27,24 +27,24 @@
  * Pin Configurations:
  * - ENCODER_A: Pin 27 (Rotary encoder A, active LOW)
  * - ENCODER_B: Pin 26 (Rotary encoder B, active LOW)
- * - TM_CLK: Pin 14 (TM1637 clock)
- * - TM_DIO: Pin 12 (TM1637 data)
+ * - TM_CLK: Pin 4 (TM1637 clock)
+ * - TM_DIO: Pin 2 (TM1637 data)
  * - SDA_PIN: Pin 21 (I²C SDA for PT2258)
  * - SCL_PIN: Pin 22 (I²C SCL for PT2258)
- * - SW_PWR: Pin 0 (Power switch, active LOW)
+ * - SW_PWR: Pin 0 (Power switch, active LOW) (REMOVED, now long-press on SW_OFFS)
  * - SW_OFFS: Pin 25 (Offset mode switch, active LOW)
- * - SW_MUTE: Pin 2 (Mute switch, active LOW)
+ * - SW_MUTE: Pin 2 (Mute switch, active LOW) (REMOVED, not used)
  * - AMP_EN: Pin 33 (Amplifier enable, active LOW)
  * - HP_EN: Pin 32 (Headphone enable, active LOW)
  * 
  * Control Ranges:
- * - Main Volume: 0 (max) to 79 (min) dB attenuation
+ * - Main Volume: 0 (max) to 90 (min) dB attenuation
  * - Channel Offsets: -15 to +15 dB
  * 
  * Display Modes:
- * - Main Volume: Shows volume level (00-79)
+ * - Main Volume: Shows volume level (00-90)
  * - Rear Offset: Shows 'r' followed by offset value
- * - Center Offset: Shows 'c' followed by offset value
+ * - Center Offset: Shows 'c' followed by offset value (REMOVED, not used)
  * - Subwoofer Offset: Shows 'S' followed by offset value
  * - Mute: Shows '----'
  * - Power Off: Display blank
@@ -70,7 +70,7 @@
  * @note All switches use internal pull-up resistors
  * 
  * @author Original code and documentation
- * @date Last updated: [Current Date]
+ * @date Last updated: 2024-06-09
  */
 
 #include <Wire.h>
@@ -80,13 +80,12 @@
 // --- Pin Definitions ---
 #define ENCODER_A 27 // Rotary encoder A pin (active LOW)
 #define ENCODER_B 26 // Rotary encoder B pin (active LOW)
-#define TM_CLK 14    // TM1637 clock pin
-#define TM_DIO 12    // TM1637 data pin
+#define TM_CLK 4    // TM1637 clock pin
+#define TM_DIO 2    // TM1637 data pin
 #define SDA_PIN 21   // I²C SDA pin for PT2258
 #define SCL_PIN 22   // I²C SCL pin for PT2258
-#define SW_PWR 0     // Power-state switch (active low)
 #define SW_OFFS 25   // Offset-mode switch (active low)
-#define SW_MUTE 2    // Mute toggle switch (active LOW)
+//#define SW_MUTE -1    // Mute toggle switch (active LOW)
 #define AMP_EN 33    // Main amplifier enable (active LOW)
 #define HP_EN 32     // Headphone amplifier enable (active LOW)
 #define PT2258_ADDR 0x88
@@ -99,8 +98,6 @@ PT2258 amp(PT2258_ADDR);
 enum Mode
 {
   MODE_MAIN,
-  MODE_REAR,
-  MODE_CENTER,
   MODE_SUB
 };
 Mode currentMode = MODE_MAIN;
@@ -110,13 +107,14 @@ const unsigned long OFFSET_TIMEOUT = 4000; // milliseconds
 // Volume & offset values
 #define OFFSET_MAX 15 // As per factory box
 #define OFFSET_MIN -15
-uint8_t mainVolume = 30; // 0=max, 79=min
+const uint8_t onVolume = 60;
+uint8_t mainVolume = onVolume; // 0=max, 85=min
 int8_t rearOffset = 0;   // -15..+15
 int8_t centerOffset = 0; // -15..+15
-int8_t subOffset = 0;    // -15..+15
+int8_t subOffset = 2;    // -15..+15
 
 bool ampPower = false;
-bool isMuted = false;
+bool isMuted = true;
 
 // Rotary encoder state
 volatile int8_t encoderDelta = 0;
@@ -124,19 +122,26 @@ int lastEncA = HIGH, lastEncB = HIGH;
 
 // Debounce for buttons
 unsigned long lastButtonPress[3] = {0, 0, 0};
-const unsigned long debounceDelay = 200;
+const unsigned long debounceDelay = 500;
+
+// Offset button press tracking
+unsigned long offsPressStart = 0;
+bool offsWasHeld = false;
 
 // Display characters
-const byte SEG_d = {SEG_B | SEG_C | SEG_D | SEG_E | SEG_G};
-const byte SEG_o = {SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F}; // O
-const byte SEG_s = {SEG_A | SEG_C | SEG_D | SEG_F | SEG_G};         // S
-const byte SEG_r = {SEG_A | SEG_B | SEG_C | SEG_D | SEG_E};         // r
-const byte SEG_c = {SEG_A | SEG_D | SEG_E | SEG_F};                 // c
-const byte SEG_n = {SEG_C | SEG_E | SEG_G};                         // n
-const byte SEG_e = {SEG_A | SEG_D | SEG_E | SEG_F | SEG_G};
+const byte SEG_d = (SEG_B | SEG_C | SEG_D | SEG_E | SEG_G);
+const byte SEG_o = (SEG_A | SEG_B | SEG_C | SEG_D | SEG_E | SEG_F); // O
+const byte SEG_s = (SEG_A | SEG_C | SEG_D | SEG_F | SEG_G);         // S
+const byte SEG_r = (SEG_A | SEG_B | SEG_C | SEG_D | SEG_E);         // r
+const byte SEG_c = (SEG_A | SEG_D | SEG_E | SEG_F);                 // c
+const byte SEG_n = (SEG_C | SEG_E | SEG_G);                         // n
+const byte SEG_e = (SEG_A | SEG_D | SEG_E | SEG_F | SEG_G);
 const u_int8_t SEG_mute[] = {SEG_G, SEG_G, SEG_G, SEG_G}; // Custom: show '----'
-const byte SEG_Negative = {SEG_G};                        //- For negative numbers
+const byte SEG_Negative = (SEG_G);                        //- For negative numbers
 // --- Function Prototypes ---
+
+
+
 
 // Function prototypes
 void updateAllChannels();
@@ -153,8 +158,8 @@ uint8_t applyOffset(int8_t base, int8_t offset)
   int v = base + offset;
   if (v < 0)
     v = 0;
-  if (v > 79)
-    v = 79;
+  if (v > 90)
+    v = 90;
   return (uint8_t)v;
 }
 
@@ -173,6 +178,9 @@ void IRAM_ATTR encoderISR()
   }
 }
 
+
+
+
 // --- Hardware Init ---
 void setup()
 {
@@ -184,7 +192,6 @@ void setup()
 
   // PT2258 init
   amp.begin();
-  amp.mute(false);
 
   // Rotary encoder
   pinMode(ENCODER_A, INPUT_PULLUP);
@@ -193,19 +200,28 @@ void setup()
   attachInterrupt(digitalPinToInterrupt(ENCODER_B), encoderISR, CHANGE);
 
   // Buttons
-  pinMode(SW_PWR, INPUT_PULLUP);
   pinMode(SW_OFFS, INPUT_PULLUP);
-  pinMode(SW_MUTE, INPUT_PULLUP);
+  //pinMode(SW_MUTE, INPUT_PULLUP);
 
   // Outputs
   pinMode(AMP_EN, OUTPUT);
   pinMode(HP_EN, OUTPUT);
-  digitalWrite(AMP_EN, LOW); // Amp off (active LOW)
-  digitalWrite(HP_EN, LOW);
+  digitalWrite(AMP_EN, HIGH); // Amp off (active LOW)
+  digitalWrite(HP_EN, HIGH);
   pinMode(TM_CLK, OUTPUT);
   pinMode(TM_DIO, OUTPUT);
 
+  delay(2000);
+
+  ampPower = false;
+
   updateAllChannels();
+  digitalWrite(AMP_EN, ampPower); // Amp off (active LOW)
+  ampPower = !ampPower;
+  updateAllChannels();
+  amp.mute(false);
+
+  isMuted = false;
   updateDisplay();
 }
 
@@ -223,45 +239,65 @@ void loop()
   }
 }
 
+void pwrToggle()
+  {
+    ampPower = !ampPower;
+    digitalWrite(AMP_EN, ampPower ? HIGH : LOW); // Active LOW
+    if (!ampPower){
+      isMuted = false; // Reset mute on power-off
+      displayOff();
+      return; 
+    }
+    else
+    {
+  updateAllChannels();
+  amp.mute(false);
+
+  isMuted=false;
+  updateDisplay();
+  }
+}
+   
+
 // --- Button Handling ---
 void handleButtons()
 {
   unsigned long now = millis();
 
-  // Power button
-  if (digitalRead(SW_PWR) == LOW && now - lastButtonPress[0] > debounceDelay)
-  {
-    lastButtonPress[0] = now;
-    ampPower = !ampPower;
-    digitalWrite(AMP_EN, ampPower ? HIGH : LOW); // Active LOW
-    if (!ampPower)
-      isMuted = false; // Reset mute on power-off
-    updateDisplay();
-  }
-  // Offset select button
-  if (digitalRead(SW_OFFS) == LOW && now - lastButtonPress[1] > debounceDelay)
-  {
-    lastButtonPress[1] = now;
-    switch (currentMode)
-    {
-    case MODE_MAIN:
-      currentMode = MODE_REAR;
-      break;
-    case MODE_REAR:
-      currentMode = MODE_CENTER;
-      break;
-    case MODE_CENTER:
-      currentMode = MODE_SUB;
-      break;
-    case MODE_SUB:
-      currentMode = MODE_MAIN;
-      break;
+  // --- Offset switch: long press for power, short press for offset mode ---
+  int offsState = digitalRead(SW_OFFS);
+
+  if (offsState == LOW) {
+    if (offsPressStart == 0) {
+      offsPressStart = now;
+      offsWasHeld = false;
+    } else if (!offsWasHeld && (now - offsPressStart >= 3000)) {
+      // Long press detected (3 seconds)
+      offsWasHeld = true;
+      pwrToggle();
+      lastButtonPress[1] = now; // Prevent short press after release
     }
-    lastInputTime = now;
-    updateDisplay();
+  } else {
+    if (offsPressStart != 0 && !offsWasHeld && (now - offsPressStart > debounceDelay)) {
+      // Short press detected
+      switch (currentMode)
+      {
+      case MODE_MAIN:
+        currentMode = MODE_SUB;
+        break;
+      case MODE_SUB:
+        currentMode = MODE_MAIN;
+        break;
+      }
+      lastInputTime = now;
+      updateDisplay();
+    }
+    offsPressStart = 0;
+    offsWasHeld = false;
   }
+
   // Mute button
-  if (digitalRead(SW_MUTE) == LOW && now - lastButtonPress[2] > debounceDelay)
+  /*if (digitalRead(SW_MUTE) == LOW && now - lastButtonPress[2] > debounceDelay)
   {
     lastButtonPress[2] = now;
     if (ampPower)
@@ -270,31 +306,26 @@ void handleButtons()
       amp.mute(isMuted);
       updateDisplay();
     }
-  }
+  }*/
 }
 
 // --- Rotary Encoder for Volume/Offsets ---
 void handleEncoder()
 {
+  if(ampPower){
   int delta;
   noInterrupts();
   delta = encoderDelta;
   encoderDelta = 0;
   interrupts();
 
-  if (delta != 0 && ampPower)
+  if (delta != 0)
   {
     lastInputTime = millis();
     switch (currentMode)
     {
     case MODE_MAIN:
-      mainVolume = constrain(mainVolume + delta, 0, 79);
-      break;
-    case MODE_REAR:
-      rearOffset = constrain(rearOffset + delta, OFFSET_MIN, OFFSET_MAX);
-      break;
-    case MODE_CENTER:
-      centerOffset = constrain(centerOffset + delta, OFFSET_MIN, OFFSET_MAX);
+      mainVolume = constrain(mainVolume + delta, 0, 85);
       break;
     case MODE_SUB:
       subOffset = constrain(subOffset + delta, OFFSET_MIN, OFFSET_MAX);
@@ -302,6 +333,7 @@ void handleEncoder()
     }
     updateAllChannels();
     updateDisplay();
+  }
   }
 }
 
@@ -311,24 +343,26 @@ void updateAllChannels()
   // 1=Front Left, 2=Front Right, 5=Center, 6=Sub, 3=Rear Left, 4=Rear Right
   amp.volume(1, mainVolume);                            // Front L
   amp.volume(2, mainVolume);                            // Front R
-  amp.volume(3, applyOffset(mainVolume, rearOffset));   // Rear L
-  amp.volume(4, applyOffset(mainVolume, rearOffset));   // Rear R
-  amp.volume(5, applyOffset(mainVolume, centerOffset)); // Center
+  amp.volume(3, 0);   // Rear L
+  amp.volume(4, 0);   // Rear R
+  amp.volume(5, 0); // Center
+  //amp.volume(3, applyOffset(mainVolume, rearOffset));   // Rear L
+  //amp.volume(4, applyOffset(mainVolume, rearOffset));   // Rear R
+  //amp.volume(5, applyOffset(mainVolume, centerOffset)); // Center
   amp.volume(6, applyOffset(mainVolume, subOffset));    // Sub
 }
 
 void displayOff()
 {
   // Serial.println("displayOff()");
-  display.clear();
-  display.setBrightness(0x00, false); // Set brightness to 0
+  display.setBrightness(0x00, false); // Set brightness to 0 and turn display off
   return;
 }
 
 void displayOn()
 {
   // Serial.println("displayOn()");
-  display.clear();
+
   display.setBrightness(0x05, true); // Set brightness to 5
   return;
 }
@@ -350,53 +384,23 @@ void initDisplay()
 // --- Display Logic: Show relevant info ---
 void updateDisplay()
 {
-  display.clear();
+  
   if (!ampPower)
   {
     displayOff();
     return;
   }
-  else if (ampPower)
+  else
   {
     displayOn();
-    if (isMuted)
-    {
-      display.setSegments(SEG_mute, 4, 0); // Custom: show '----'
-      return;
-    }
+    display.clear();
     switch (currentMode)
     {
     case MODE_MAIN:
       display.showNumberDec(mainVolume, false, 2, 2);
       display.showNumberDec(0, false, 2, 0); // blank left
       break;
-    case MODE_REAR:
-      // 'r' left, offset value right
-      display.setSegments(&SEG_r, 1, 0); // Custom: show 'r'
-      if (rearOffset < 0)
-      {
-        display.setSegments(&SEG_Negative, 1, 1);
-      } //- For negative numbers
-      else
-      {
-        display.showNumberDec(0, 0, false, 1);
-      }
-      display.showNumberDec(rearOffset, true, 2, 2);
-      break;
-    case MODE_CENTER:
-      // 'c' left, offset value right
-      display.setSegments(&SEG_c, 1, 0); // Custom: show 'c'
-      if (centerOffset < 0)
-      {
-        display.setSegments(&SEG_Negative, 1, 1);
-      }
-      else
-      {
-        display.showNumberDec(0, 0, false, 1);
-      }
-      //- For negative numbers
-      display.showNumberDec(centerOffset, true, 2, 2);
-      break;
+
     case MODE_SUB:
       // 'S' left, offset value right
       display.setSegments(&SEG_s, 1, 0); // Custom: show 'S'
@@ -409,9 +413,9 @@ void updateDisplay()
         display.showNumberDec(0, 0, false, 1);
       }
       display.showNumberDec(subOffset, true, 2, 2);
-      break;
+      return;
     default:
-      break;
+      return;
     }
     return;
   }
